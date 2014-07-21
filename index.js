@@ -1,10 +1,11 @@
-var torrentStream = require('torrent-stream');
+var torrentStream = require('../torrent-stream');
 var http = require('http');
 var fs = require('fs');
 var rangeParser = require('range-parser');
 var url = require('url');
 var mime = require('mime');
 var pump = require('pump');
+var CombinedStream = require('combined-stream');
 
 var parseBlocklist = function(filename) {
 	// TODO: support gzipped files
@@ -21,20 +22,91 @@ var parseBlocklist = function(filename) {
 	});
 	return blocklist;
 };
+var detectLargest = function(filelist) {
+	var file, files, largest, lg, name;
+	files = {};
+	filelist.forEach(function(file, i) {
+		var extension, name, part;
+		extension = file.name.substr(file.name.lastIndexOf('.') + 1);
+		if (extension[0] === "r") {
+			name = file.name.slice(0, -extension.length - 1) + ".rar";
+			part = Number(extension.substr(1));
+			if (isNaN(part)) {
+				if (isNaN(part)) {
+					part = "-" + extension;
+				}
+			} else {
+				part = extension;
+			}
+			files[name] || (files[name] = {
+				length: 0,
+				composite: true,
+				name: name
+			});
+			files[name][part] = file;
+			files[name][part].index = i;
+			return files[name].length += file.length;
+		} else {
+			files[file.name] = file;
+			files[file.name].index = i;
+		}
+	});
+	largest = 0;
+	lg = "";
+	for (name in files) {
+		file = files[name];
+		if (file.length > largest) {
+			largest = file.length;
+			lg = name;
+		}
+	}
+	return files[lg];
+};
+var findByName = function(name, filelist) {
+	for (index in files) {
+		if (files[index].name === name)
+			return index;
+	}
+}
+
 
 var createServer = function(e, index) {
 	var server = http.createServer();
 
 	var onready = function() {
 		if (typeof index !== 'number') {
-			index = e.files.reduce(function(a, b) {
-				return a.length > b.length ? a : b;
-			});
-			index = e.files.indexOf(index);
-		}
+			// index = e.files.reduce(function(a, b) {
+			// 	return a.length > b.length ? a : b;
+			// });
+			// index = e.files.indexOf(index);
+			var largest = detectLargest(e.files)
+			var keys, indexes = [], files = [];
+			if (largest.composite) {
+				keys = Object.keys(largest);
+				keys.sort();
 
-		e.files[index].select();
-		server.index = e.files[index];
+				keys.forEach(function(id) {
+					var file;
+					if (id === "composite" || id === "length" || id === "name") {
+						return;
+					}
+					file = largest[id];
+					file.select();
+					indexes.push(file.index);
+					files.push(file);
+				});
+				index = indexes;
+				server.index = files;
+			} else {
+				largest.select();
+				index = largest.index;
+				server.index = largest;
+			}
+
+		} else {
+			e.files[index].select();
+			server.index = e.files[index];
+		}
 	};
 
 	if (e.torrent) onready();
@@ -53,7 +125,12 @@ var createServer = function(e, index) {
 		var host = request.headers.host || 'localhost';
 
 		if (u.pathname === '/favicon.ico') return response.end();
-		if (u.pathname === '/') u.pathname = '/'+index;
+		if (u.pathname === '/') {
+			if (index instanceof Array)
+				u.pathname = '/' + index.join(",");
+			else
+				u.pathname = '/'+index;
+		}
 		if (u.pathname === '/.json') return response.end(toJSON(host));
 		if (u.pathname === '/.m3u') {
 			response.setHeader('Content-Type', 'application/x-mpegurl; charset=utf-8');
@@ -62,35 +139,52 @@ var createServer = function(e, index) {
 			}).join('\n'));
 		}
 
-		var i = Number(u.pathname.slice(1));
+		var i = u.pathname.slice(1).split(",");
+		if (i.length > 1) {
+			var combinedStream = CombinedStream.create();
+			i.forEach(function(idx){
+				idx = parseInt(idx);
+				if (isNaN(idx) || idx >= e.files.length) {
+					response.statusCode = 404;
+					response.end();
+					return;
+				}
+				combinedStream.append(function(next) {
+					next(e.files[idx].createReadStream());
+				});
+			});
+			pump(combinedStream,response);
+		} else {
+			i = Number(u.pathname.slice(1));
 
-		if (isNaN(i) || i >= e.files.length) {
-			response.statusCode = 404;
-			response.end();
-			return;
-		}
+			if (isNaN(i) || i >= e.files.length) {
+				response.statusCode = 404;
+				response.end();
+				return;
+			}
 
-		var file = e.files[i];
-		var range = request.headers.range;
-		range = range && rangeParser(file.length, range)[0];
-		response.setHeader('Accept-Ranges', 'bytes');
-		response.setHeader('Content-Type', mime.lookup(file.name));
+			var file = e.files[i];
+			var range = request.headers.range;
+			range = range && rangeParser(file.length, range)[0];
+			response.setHeader('Accept-Ranges', 'bytes');
+			response.setHeader('Content-Type', mime.lookup(file.name));
 
-		if (!range) {
-			response.setHeader('Content-Length', file.length);
+			if (!range) {
+				response.setHeader('Content-Length', file.length);
+				if (request.method === 'HEAD') return response.end();
+				pump(file.createReadStream(), response);
+				return;
+			}
+
+			response.statusCode = 206;
+			response.setHeader('Content-Length', range.end - range.start + 1);
+			response.setHeader('Content-Range', 'bytes '+range.start+'-'+range.end+'/'+file.length);
+
 			if (request.method === 'HEAD') return response.end();
-			pump(file.createReadStream(), response);
-			return;
+			pump(file.createReadStream(range), response);
 		}
-
-		response.statusCode = 206;
-		response.setHeader('Content-Length', range.end - range.start + 1);
-		response.setHeader('Content-Range', 'bytes '+range.start+'-'+range.end+'/'+file.length);
-
-		if (request.method === 'HEAD') return response.end();
-		pump(file.createReadStream(range), response);
 	}).on('connection', function(socket) {
-	socket.setTimeout(36000000);
+		socket.setTimeout(36000000);
 	});
 
 	return server;
