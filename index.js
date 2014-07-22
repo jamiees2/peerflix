@@ -1,11 +1,15 @@
-var torrentStream = require('../torrent-stream');
+var torrentStream = require('torrent-stream');
 var http = require('http');
 var fs = require('fs');
 var rangeParser = require('range-parser');
 var url = require('url');
 var mime = require('mime');
 var pump = require('pump');
-var CombinedStream = require('combined-stream');
+var path = require('path');
+var proc = require('child_process');
+var mkdirp = require('mkdirp');
+var async = require('async');
+var GrowingFile = require('growing-file');
 
 var parseBlocklist = function(filename) {
 	// TODO: support gzipped files
@@ -22,6 +26,15 @@ var parseBlocklist = function(filename) {
 	});
 	return blocklist;
 };
+var toPartExtension = function(extension) {
+	if (extension === "rar"){
+		part = "part01.rar";
+	} else {
+		// part = "part" + ("0" + (parseInt(extension.substr(1)) + 2)).slice(-2) + ".rar" ;
+		part = "part01." + extension;
+	}
+	return part;
+}
 var detectLargest = function(filelist) {
 	var file, files, largest, lg, name;
 	files = {};
@@ -72,8 +85,8 @@ var findByName = function(name, filelist) {
 
 var createServer = function(e, index) {
 	var server = http.createServer();
-
 	var onready = function() {
+
 		if (typeof index !== 'number') {
 			// index = e.files.reduce(function(a, b) {
 			// 	return a.length > b.length ? a : b;
@@ -124,12 +137,14 @@ var createServer = function(e, index) {
 		var u = url.parse(request.url);
 		var host = request.headers.host || 'localhost';
 
-		if (u.pathname === '/favicon.ico') return response.end();
+		if (u.pathname === '/favicon.ico') 
+			return response.end();
+
 		if (u.pathname === '/') {
 			if (index instanceof Array)
 				u.pathname = '/' + index.join(",");
 			else
-				u.pathname = '/'+index;
+				u.pathname = '/' + index;
 		}
 		if (u.pathname === '/.json') return response.end(toJSON(host));
 		if (u.pathname === '/.m3u') {
@@ -141,7 +156,13 @@ var createServer = function(e, index) {
 
 		var i = u.pathname.slice(1).split(",");
 		if (i.length > 1) {
-			var combinedStream = CombinedStream.create();
+			var extracted = path.join(e.path, "extracted");
+			var parts = path.join(e.path, "parts");
+			mkdirp.sync(extracted);
+			mkdirp.sync(parts);
+			var tasks = [];
+			var started = false;
+			var child = null;
 			i.forEach(function(idx){
 				idx = parseInt(idx);
 				if (isNaN(idx) || idx >= e.files.length) {
@@ -149,11 +170,36 @@ var createServer = function(e, index) {
 					response.end();
 					return;
 				}
-				combinedStream.append(function(next) {
-					next(e.files[idx].createReadStream());
+				tasks.push(function(callback){
+					var filename = e.files[idx].name;
+					var extension = filename.substr(filename.lastIndexOf('.') + 1);
+					var start = filename.slice(0,-extension.length) + "rar";
+					// console.log(filename);
+					var target = path.join(parts,filename);
+					var reader = e.files[idx].createReadStream()
+					reader.pipe(fs.createWriteStream(target))
+					reader.on('end',function(){
+						console.log("Completed " + e.files[idx].name);
+
+						if (!started) {
+							// UnRAR eXtract Overwrite KeepBroken VolumePause
+							// This allows unrar to wait after extracting each volume before opening the next.
+							child = proc.spawn("/usr/local/bin/unrar", [ "x", "-o+", "-kb", "-vp", path.join(parts,start), extracted]);
+							started = true;
+							child.stdin.setEncoding = 'utf-8';
+							// child.stdout.on('data', function (data) { console.log(data.toString()); });
+							// child.stderr.on('data', function (data) { console.log(data.toString()); });
+							var file = GrowingFile.open(path.join(extracted,"masterchef.australia.s06e56.pdtv.x264-fqm.mp4"));
+							pump(file,response);
+						} else {
+							child.stdin.write("C\n"); // [C]ontinue unRARing
+						}
+						callback(null);
+					});
 				});
 			});
-			pump(combinedStream,response);
+			async.series(tasks); // Process each of them in a row, so that the output is correct
+
 		} else {
 			i = Number(u.pathname.slice(1));
 
