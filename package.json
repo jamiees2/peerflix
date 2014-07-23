@@ -1,6 +1,6 @@
 {
   "name": "peerflix",
-  "version": "0.12.0",
+  "version": "0.13.1",
   "license": "MIT",
   "repository": "git://github.com/mafintosh/peerflix.git",
   "bin": {
@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "async": "^0.9.0",
+    "airplay-js": "^0.2.0",
     "clivas": "^0.1.4",
     "combined-stream": "0.0.5",
     "growing-file": "git+ssh://git@github.com:jamiees2/node-growing-file.git",
@@ -20,7 +21,7 @@
     "range-parser": "^1.0.0",
     "rc": "^0.4.0",
     "read-torrent": "^0.2.0",
-    "torrent-stream": "^0.13.2",
+    "torrent-stream": "^0.13.5",
     "unrar": "^0.1.0",
     "windows-no-runnable": "~0.0.6"
   }
