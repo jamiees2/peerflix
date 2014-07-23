@@ -10,6 +10,7 @@ var proc = require('child_process');
 var mkdirp = require('mkdirp');
 var async = require('async');
 var GrowingFile = require('growing-file');
+var Unrar = require('unrar');
 
 var parseBlocklist = function(filename) {
 	// TODO: support gzipped files
@@ -26,24 +27,26 @@ var parseBlocklist = function(filename) {
 	});
 	return blocklist;
 };
-var findLargestInRar = function(directory, callback) {
-	var files = fs.readdirSync(directory);
-	if (files.length == 0) {
-		setTimeout(function(){
-			findLargestInRar(directory,callback);
-		},500);
-	}
-	var largest = null, largestSize = 0;
-	files.forEach(function(file){
-		var stat = fs.statSync(path.join(directory,file));
-		if (stat.size > largestSize) {
-			largest = file;
-			largestSize = stat.size;
-		}
-	});
-	return callback(largest);
-}
-var detectLargest = function(filelist) {
+
+// var getLargestInDirectory = function(directory, callback) {
+// 	var read = function(){
+// 		var files = fs.readdirSync(directory);
+// 		if (files.length == 0) {
+// 			return setTimeout(read,500);
+// 		}
+// 		var largest = null, largestSize = 0;
+// 		files.forEach(function(file){
+// 			var stat = fs.statSync(path.join(directory,file));
+// 			if (stat.size > largestSize) {
+// 				largest = file;
+// 				largestSize = stat.size;
+// 			}
+// 		});
+// 		return callback(largest);
+// 	}
+// 	setTimeout(read,500);
+// }
+var getLargestInTorrent = function(filelist) {
 	var file, files, largest, lg, name;
 	files = {};
 	filelist.forEach(function(file, i) {
@@ -53,9 +56,7 @@ var detectLargest = function(filelist) {
 			name = file.name.slice(0, -extension.length - 1) + ".rar";
 			part = Number(extension.substr(1));
 			if (isNaN(part)) {
-				if (isNaN(part)) {
-					part = "-" + extension;
-				}
+				part = "-" + extension;
 			} else {
 				part = extension;
 			}
@@ -66,7 +67,7 @@ var detectLargest = function(filelist) {
 			});
 			files[name][part] = file;
 			files[name][part].index = i;
-			return files[name].length += file.length;
+			files[name].length += file.length;
 		} else {
 			files[file.name] = file;
 			files[file.name].index = i;
@@ -90,6 +91,60 @@ var findByName = function(name, filelist) {
 	}
 }
 
+var extracting = {};
+var downloadRAR = function(engine,files,callback) {
+	var extracted = path.join(engine.path, "extracted");
+	var parts = path.join(engine.path, "parts");
+	var t = files.join(",");
+	if (extracting[t] === true) {
+		var idx = parseInt(files[0]);
+		var filename = engine.files[idx].name;
+		var start = filename.slice(0,filename.lastIndexOf('.') + 1) + "rar";
+		return callback(null, { extracted: extracted, parts: parts, start: start });
+	}
+	extracting[t] = true;
+	mkdirp.sync(extracted);
+	mkdirp.sync(parts);
+	var tasks = [];
+	var child = null;
+	files.forEach(function(idx){
+		idx = parseInt(idx);
+		if (isNaN(idx) || idx >= engine.files.length) {
+			delete extracting[t];
+			return callback("Non existent index!");
+		}
+		tasks.push(function(async_callback){
+			var filename = engine.files[idx].name;
+			var extension = filename.substr(filename.lastIndexOf('.') + 1);
+			var start = filename.slice(0,-extension.length) + "rar";
+			// console.log(filename);
+			var target = path.join(parts,filename);
+			var reader = engine.files[idx].createReadStream()
+			reader.pipe(fs.createWriteStream(target))
+			reader.on('end',function(){
+				console.log("Completed " + engine.files[idx].name);
+
+				if (child === null) {
+					// UnRAR eXtract Overwrite KeepBroken VolumePause
+					// This allows unrar to wait after extracting each volume before opening the next.
+					child = proc.spawn("/usr/local/bin/unrar", [ "x", "-o+", "-kb", "-vp", path.join(parts,start), extracted]);
+					child.stdin.setEncoding = 'utf-8';
+					process.on('exit', function() { child.kill() });
+					// child.stdout.on('data', function (data) { console.log(data.toString()); });
+					// child.stderr.on('data', function (data) { console.log(data.toString()); });
+					callback(null,{ extracted: extracted, parts: parts, start: start });
+				} else {
+					child.stdin.write("C\n"); // [C]ontinue unRARing
+				}
+				async_callback(null);
+			});
+		});
+	});
+	async.series(tasks); // Process each of them in a row, so that the output is correct
+}
+
+
+
 
 var createServer = function(e, index) {
 	var server = http.createServer();
@@ -100,7 +155,7 @@ var createServer = function(e, index) {
 			// 	return a.length > b.length ? a : b;
 			// });
 			// index = e.files.indexOf(index);
-			var largest = detectLargest(e.files)
+			var largest = getLargestInTorrent(e.files)
 			var keys, indexes = [], files = [];
 			if (largest.composite) {
 				keys = Object.keys(largest);
@@ -164,51 +219,46 @@ var createServer = function(e, index) {
 
 		var i = u.pathname.slice(1).split(",");
 		if (i.length > 1) {
-			var extracted = path.join(e.path, "extracted");
-			var parts = path.join(e.path, "parts");
-			mkdirp.sync(extracted);
-			mkdirp.sync(parts);
-			var tasks = [];
-			var started = false;
-			var child = null;
-			i.forEach(function(idx){
-				idx = parseInt(idx);
-				if (isNaN(idx) || idx >= e.files.length) {
+			downloadRAR(e,i, function(err, data){
+				if (err) {
 					response.statusCode = 404;
 					response.end();
 					return;
 				}
-				tasks.push(function(callback){
-					var filename = e.files[idx].name;
-					var extension = filename.substr(filename.lastIndexOf('.') + 1);
-					// console.log(filename);
-					var target = path.join(parts,filename);
-					var reader = e.files[idx].createReadStream()
-					reader.pipe(fs.createWriteStream(target))
-					reader.on('end',function(){
-						console.log("Completed " + e.files[idx].name);
-
-						if (!started) {
-							var start = filename.slice(0,-extension.length) + "rar";
-							// UnRAR eXtract Overwrite KeepBroken VolumePause
-							// This allows unrar to wait after extracting each volume before opening the next.
-							child = proc.spawn("/usr/local/bin/unrar", [ "x", "-o+", "-kb", "-vp", path.join(parts,start), extracted]);
-							started = true;
-							child.stdin.setEncoding = 'utf-8';
-							// child.stdout.on('data', function (data) { console.log(data.toString()); });
-							// child.stderr.on('data', function (data) { console.log(data.toString()); });
-							findLargestInRar(extracted,function(name){
-								var file = GrowingFile.open(path.join(extracted,name));
-								pump(file,response);
-							});
-						} else {
-							child.stdin.write("C\n"); // [C]ontinue unRARing
+				var archive = new Unrar(path.join(data.parts, data.start));
+				archive.list(function (err, entries) {
+					var largest = null, largestSize = 0;
+					entries.forEach(function(entry){
+						if (entry.size > largestSize) {
+							largestSize = entry.size;
+							largest = entry;
 						}
-						callback(null);
 					});
+					var range = request.headers.range;
+					range = range && rangeParser(largest.size, range)[0];
+					response.setHeader('Accept-Ranges', 'bytes');
+					response.setHeader('Content-Type', mime.lookup(largest.name));
+
+					if (!range) {
+						response.setHeader('Content-Length', largest.size);
+						if (request.method === 'HEAD') return response.end();
+						var file = GrowingFile.open(path.join(data.extracted,largest.name));
+						pump(file, response);
+						return;
+					}
+
+					response.statusCode = 206;
+					response.setHeader('Content-Length', range.end - range.start + 1);
+					response.setHeader('Content-Range', 'bytes '+range.start+'-'+range.end+'/'+largest.size);
+
+					if (request.method === 'HEAD') return response.end();
+					var file = GrowingFile.open(path.join(data.extracted,largest.name), {offset: range.start, end: range.end});
+					pump(file,response);
 				});
+				// getLargestInDirectory(data.extracted,function(name){
+					
+				// });
 			});
-			async.series(tasks); // Process each of them in a row, so that the output is correct
 
 		} else {
 			i = Number(u.pathname.slice(1));
