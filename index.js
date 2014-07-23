@@ -26,14 +26,22 @@ var parseBlocklist = function(filename) {
 	});
 	return blocklist;
 };
-var toPartExtension = function(extension) {
-	if (extension === "rar"){
-		part = "part01.rar";
-	} else {
-		// part = "part" + ("0" + (parseInt(extension.substr(1)) + 2)).slice(-2) + ".rar" ;
-		part = "part01." + extension;
+var findLargestInRar = function(directory, callback) {
+	var files = fs.readdirSync(directory);
+	if (files.length == 0) {
+		setTimeout(function(){
+			findLargestInRar(directory,callback);
+		},500);
 	}
-	return part;
+	var largest = null, largestSize = 0;
+	files.forEach(function(file){
+		var stat = fs.statSync(path.join(directory,file));
+		if (stat.size > largestSize) {
+			largest = file;
+			largestSize = stat.size;
+		}
+	});
+	return callback(largest);
 }
 var detectLargest = function(filelist) {
 	var file, files, largest, lg, name;
@@ -173,7 +181,6 @@ var createServer = function(e, index) {
 				tasks.push(function(callback){
 					var filename = e.files[idx].name;
 					var extension = filename.substr(filename.lastIndexOf('.') + 1);
-					var start = filename.slice(0,-extension.length) + "rar";
 					// console.log(filename);
 					var target = path.join(parts,filename);
 					var reader = e.files[idx].createReadStream()
@@ -182,6 +189,7 @@ var createServer = function(e, index) {
 						console.log("Completed " + e.files[idx].name);
 
 						if (!started) {
+							var start = filename.slice(0,-extension.length) + "rar";
 							// UnRAR eXtract Overwrite KeepBroken VolumePause
 							// This allows unrar to wait after extracting each volume before opening the next.
 							child = proc.spawn("/usr/local/bin/unrar", [ "x", "-o+", "-kb", "-vp", path.join(parts,start), extracted]);
@@ -189,8 +197,10 @@ var createServer = function(e, index) {
 							child.stdin.setEncoding = 'utf-8';
 							// child.stdout.on('data', function (data) { console.log(data.toString()); });
 							// child.stderr.on('data', function (data) { console.log(data.toString()); });
-							var file = GrowingFile.open(path.join(extracted,"masterchef.australia.s06e56.pdtv.x264-fqm.mp4"));
-							pump(file,response);
+							findLargestInRar(extracted,function(name){
+								var file = GrowingFile.open(path.join(extracted,name));
+								pump(file,response);
+							});
 						} else {
 							child.stdin.write("C\n"); // [C]ontinue unRARing
 						}
