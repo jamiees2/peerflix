@@ -93,40 +93,34 @@ var findByName = function(name, filelist) {
 
 var extracting = {};
 var downloadRAR = function(engine,files,callback) {
+	// Possible race conditions?
 	var extracted = path.join(engine.path, "extracted");
 	var t = files.join(",");
 	if (extracting[t] === true) {
 		var idx = parseInt(files[0]);
 		var parts = path.join(engine.path, path.dirname(engine.files[idx].path));
-		var filename = engine.files[idx].name;
-		var start = filename.slice(0,filename.lastIndexOf('.') + 1) + "rar";
+		var start = engine.files[idx].name;
 		return callback(null, { extracted: extracted, parts: parts, start: start });
 	}
 	extracting[t] = true;
 	mkdirp.sync(extracted);
-	// mkdirp.sync(parts);
 	var tasks = [];
 	var child = null;
-	files.forEach(function(idx){
-		idx = parseInt(idx);
+	for(var i=0;i<files.length;i++){
+		idx = parseInt(files[i]);
 		if (isNaN(idx) || idx >= engine.files.length) {
 			delete extracting[t];
 			return callback("Non existent index!");
 		}
 		tasks.push(function(async_callback){
-			// console.log(filename);
-			// var target = path.join(parts,filename);
 			var reader = engine.files[idx].createReadStream()
-			// reader.pipe(fs.createWriteStream(target))
 			reader.on('data',function(){/* noop */});
 			reader.on('end',function(){
 				console.log("Completed " + engine.files[idx].name);
 
 				if (child === null) {
 
-					var filename = engine.files[idx].name;
-					var extension = filename.substr(filename.lastIndexOf('.') + 1);
-					var start = filename.slice(0,-extension.length) + "rar";
+					var start = engine.files[idx].name;
 					var parts = path.join(engine.path, path.dirname(engine.files[idx].path));
 					// UnRAR eXtract Overwrite KeepBroken VolumePause
 					// This allows unrar to wait after extracting each volume before opening the next.
@@ -142,8 +136,29 @@ var downloadRAR = function(engine,files,callback) {
 				async_callback(null);
 			});
 		});
-	});
+	}
 	async.series(tasks); // Process each of them in a row, so that the output is correct
+}
+
+var pumpRange = function(request, response, file, readStream){
+	var range = request.headers.range;
+	range = range && rangeParser(file.length, range)[0];
+	response.setHeader('Accept-Ranges', 'bytes');
+	response.setHeader('Content-Type', mime.lookup(file.name));
+
+	if (!range) {
+		response.setHeader('Content-Length', file.length);
+		if (request.method === 'HEAD') return response.end();
+		pump(readStream(null), response);
+		return;
+	}
+
+	response.statusCode = 206;
+	response.setHeader('Content-Length', range.end - range.start + 1);
+	response.setHeader('Content-Range', 'bytes '+range.start+'-'+range.end+'/'+file.length);
+
+	if (request.method === 'HEAD') return response.end();
+	pump(readStream(range), response);
 }
 
 
@@ -230,37 +245,18 @@ var createServer = function(e, index) {
 				}
 				var archive = new Unrar(path.join(data.parts, data.start));
 				archive.list(function (err, entries) {
-					var largest = null, largestSize = 0;
-					entries.forEach(function(entry){
-						if (entry.size > largestSize) {
-							largestSize = entry.size;
-							largest = entry;
+					var file = entries.reduce(function(a, b) {
+						return a.size > b.size ? a : b;
+					});
+					var filepath = path.join(data.extracted,file.name);
+					pumpRange(request, response, { length: file.size, name: file.name}, function(range) {
+						if (range) {
+							return GrowingFile.open(filepath, {offset: range.start, end: range.end});
+						} else {
+							return GrowingFile.open(filepath);
 						}
 					});
-					var range = request.headers.range;
-					range = range && rangeParser(largest.size, range)[0];
-					response.setHeader('Accept-Ranges', 'bytes');
-					response.setHeader('Content-Type', mime.lookup(largest.name));
-
-					if (!range) {
-						response.setHeader('Content-Length', largest.size);
-						if (request.method === 'HEAD') return response.end();
-						var file = GrowingFile.open(path.join(data.extracted,largest.name));
-						pump(file, response);
-						return;
-					}
-
-					response.statusCode = 206;
-					response.setHeader('Content-Length', range.end - range.start + 1);
-					response.setHeader('Content-Range', 'bytes '+range.start+'-'+range.end+'/'+largest.size);
-
-					if (request.method === 'HEAD') return response.end();
-					var file = GrowingFile.open(path.join(data.extracted,largest.name), {offset: range.start, end: range.end});
-					pump(file,response);
 				});
-				// getLargestInDirectory(data.extracted,function(name){
-					
-				// });
 			});
 
 		} else {
@@ -273,24 +269,13 @@ var createServer = function(e, index) {
 			}
 
 			var file = e.files[i];
-			var range = request.headers.range;
-			range = range && rangeParser(file.length, range)[0];
-			response.setHeader('Accept-Ranges', 'bytes');
-			response.setHeader('Content-Type', mime.lookup(file.name));
-
-			if (!range) {
-				response.setHeader('Content-Length', file.length);
-				if (request.method === 'HEAD') return response.end();
-				pump(file.createReadStream(), response);
-				return;
-			}
-
-			response.statusCode = 206;
-			response.setHeader('Content-Length', range.end - range.start + 1);
-			response.setHeader('Content-Range', 'bytes '+range.start+'-'+range.end+'/'+file.length);
-
-			if (request.method === 'HEAD') return response.end();
-			pump(file.createReadStream(range), response);
+			pumpRange(request, response, file, function(range) {
+				if (range) {
+					return file.createReadStream(range);
+				} else {
+					return file.createReadStream();
+				}
+			});
 		}
 	}).on('connection', function(socket) {
 		socket.setTimeout(36000000);
