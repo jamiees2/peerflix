@@ -94,17 +94,17 @@ var findByName = function(name, filelist) {
 var extracting = {};
 var downloadRAR = function(engine,files,callback) {
 	var extracted = path.join(engine.path, "extracted");
-	var parts = path.join(engine.path, "parts");
 	var t = files.join(",");
 	if (extracting[t] === true) {
 		var idx = parseInt(files[0]);
+		var parts = path.join(engine.path, path.dirname(engine.files[idx].path));
 		var filename = engine.files[idx].name;
 		var start = filename.slice(0,filename.lastIndexOf('.') + 1) + "rar";
 		return callback(null, { extracted: extracted, parts: parts, start: start });
 	}
 	extracting[t] = true;
 	mkdirp.sync(extracted);
-	mkdirp.sync(parts);
+	// mkdirp.sync(parts);
 	var tasks = [];
 	var child = null;
 	files.forEach(function(idx){
@@ -114,17 +114,20 @@ var downloadRAR = function(engine,files,callback) {
 			return callback("Non existent index!");
 		}
 		tasks.push(function(async_callback){
-			var filename = engine.files[idx].name;
-			var extension = filename.substr(filename.lastIndexOf('.') + 1);
-			var start = filename.slice(0,-extension.length) + "rar";
 			// console.log(filename);
-			var target = path.join(parts,filename);
+			// var target = path.join(parts,filename);
 			var reader = engine.files[idx].createReadStream()
-			reader.pipe(fs.createWriteStream(target))
+			// reader.pipe(fs.createWriteStream(target))
+			reader.on('data',function(){/* noop */});
 			reader.on('end',function(){
 				console.log("Completed " + engine.files[idx].name);
 
 				if (child === null) {
+
+					var filename = engine.files[idx].name;
+					var extension = filename.substr(filename.lastIndexOf('.') + 1);
+					var start = filename.slice(0,-extension.length) + "rar";
+					var parts = path.join(engine.path, path.dirname(engine.files[idx].path));
 					// UnRAR eXtract Overwrite KeepBroken VolumePause
 					// This allows unrar to wait after extracting each volume before opening the next.
 					child = proc.spawn("/usr/local/bin/unrar", [ "x", "-o+", "-kb", "-vp", path.join(parts,start), extracted]);
