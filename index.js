@@ -116,7 +116,7 @@ var downloadRAR = function(engine,files,callback) {
 			var reader = engine.files[idx].createReadStream()
 			reader.on('data',function(){/* noop */});
 			reader.on('end',function(){
-				console.log("Completed " + engine.files[idx].name);
+				// console.log("Completed " + engine.files[idx].name);
 
 				if (child === null) {
 
@@ -245,6 +245,10 @@ var createServer = function(e, index) {
 				}
 				var archive = new Unrar(path.join(data.parts, data.start));
 				archive.list(function (err, entries) {
+					if (err) {
+						console.log(err);
+						return;
+					}
 					var file = entries.reduce(function(a, b) {
 						return a.size > b.size ? a : b;
 					});
