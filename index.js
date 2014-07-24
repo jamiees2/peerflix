@@ -56,7 +56,7 @@ var getLargestInTorrent = function(filelist) {
 			name = file.name.slice(0, -extension.length - 1) + ".rar";
 			part = Number(extension.substr(1));
 			if (isNaN(part)) {
-				part = "-" + extension;
+				part = "00" + extension;
 			} else {
 				part = extension;
 			}
@@ -106,14 +106,14 @@ var downloadRAR = function(engine,files,callback) {
 	mkdirp.sync(extracted);
 	var tasks = [];
 	var child = null;
-	for(var i=0;i<files.length;i++){
-		idx = parseInt(files[i]);
+	files.forEach(function(idx){
+		idx = parseInt(idx);
 		if (isNaN(idx) || idx >= engine.files.length) {
 			delete extracting[t];
-			return callback("Non existent index!");
+			throw new ArgumentError("Non existent index!");
 		}
 		tasks.push(function(async_callback){
-			var reader = engine.files[idx].createReadStream()
+			var reader = engine.files[idx].createReadStream();
 			reader.on('data',function(){/* noop */});
 			reader.on('end',function(){
 				// console.log("Completed " + engine.files[idx].name);
@@ -136,7 +136,7 @@ var downloadRAR = function(engine,files,callback) {
 				async_callback(null);
 			});
 		});
-	}
+	});
 	async.series(tasks); // Process each of them in a row, so that the output is correct
 }
 
@@ -178,7 +178,6 @@ var createServer = function(e, index) {
 			if (largest.composite) {
 				keys = Object.keys(largest);
 				keys.sort();
-
 				keys.forEach(function(id) {
 					var file;
 					if (id === "composite" || id === "length" || id === "name") {
