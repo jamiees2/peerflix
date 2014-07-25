@@ -10,7 +10,7 @@ var proc = require('child_process');
 var mkdirp = require('mkdirp');
 var async = require('async');
 var GrowingFile = require('growing-file');
-var Unrar = require('unrar');
+var os = require('os');
 
 var parseBlocklist = function(filename) {
 	// TODO: support gzipped files
@@ -27,6 +27,53 @@ var parseBlocklist = function(filename) {
 	});
 	return blocklist;
 };
+
+var listRar = function(filename, done) {
+	var self = this;
+	var eol = os.EOL + os.EOL;
+	proc.exec('unrar vt ' + filename, function (err, stdout) {
+		if (err) { return done(err); }
+		var chunks = stdout.split(eol);
+		chunks = chunks.slice(2, chunks.length - 1);
+		var list = chunks.map(extractProps);
+		done(null, list);
+	})
+}
+
+function extractProps (raw) {
+	var desc = {};
+
+	var props = raw.split(os.EOL);
+	props.forEach(function (prop) {
+		prop = prop.split(': ');
+		var key = normalizeKey(prop[0]);
+		var val = prop[1];
+		desc[key] = val;
+	});
+
+	return desc;
+}
+function normalizeKey (key) {
+  var normKey = key;
+  normKey = normKey.toLowerCase();
+  normKey = normKey.replace(/^\s+/, '');
+
+  var keys = {
+    'name':        'name',
+    'type':        'type',
+    'size':        'size',
+    'packed size': 'packedSize',
+    'ratio':       'ratio',
+    'mtime':       'mtime',
+    'attributes':  'attributes',
+    'crc32':       'crc32',
+    'host os':     'hostOS',
+    'compression': 'compression',
+    'flags':       'flags'
+  };
+  return keys[normKey] || key;
+}
+
 
 // var getLargestInDirectory = function(directory, callback) {
 // 	var read = function(){
@@ -124,9 +171,9 @@ var downloadRAR = function(engine,files,callback) {
 				parts = path.join(engine.path, "parts");
 				reader.pipe(fs.createWriteStream(path.join(parts,engine.files[idx].name)))
 			} else {
-				reader.on('data',function(){/* noop */});
-			}
-			reader.on('end',function(){
+			reader.on('data',function(){/* noop */});
+		}
+		reader.on('end',function(){
 				// console.log("Completed " + engine.files[idx].name);
 
 				if (child === null) {
@@ -145,8 +192,8 @@ var downloadRAR = function(engine,files,callback) {
 				}
 				async_callback(null);
 			});
-		});
 	});
+});
 	async.series(tasks); // Process each of them in a row, so that the output is correct
 }
 
@@ -252,8 +299,7 @@ var createServer = function(e, index) {
 					response.end();
 					return;
 				}
-				var archive = new Unrar(path.join(data.parts, data.start));
-				archive.list(function (err, entries) {
+				listRar(function (err, entries) {
 					if (err) {
 						console.log(err);
 						return;
