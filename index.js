@@ -299,7 +299,7 @@ var createServer = function(e, index) {
 					response.end();
 					return;
 				}
-				listRar(function (err, entries) {
+				listRar(path.join(data.parts, data.start),function (err, entries) {
 					if (err) {
 						console.log(err);
 						return;
