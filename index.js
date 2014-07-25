@@ -12,6 +12,8 @@ var async = require('async');
 var GrowingFile = require('growing-file');
 var os = require('os');
 
+proc.spawn("unrar");
+
 var parseBlocklist = function(filename) {
 	// TODO: support gzipped files
 	var blocklistData = fs.readFileSync(filename, { encoding: 'utf8' });
