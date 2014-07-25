@@ -12,7 +12,7 @@ var async = require('async');
 var GrowingFile = require('growing-file');
 var os = require('os');
 
-proc.spawn("unrar");
+
 
 var parseBlocklist = function(filename) {
 	// TODO: support gzipped files
@@ -225,6 +225,7 @@ var pumpRange = function(request, response, file, readStream){
 
 var createServer = function(e, index) {
 	var server = http.createServer();
+	proc.spawn("unrar");
 	var onready = function() {
 
 		if (typeof index !== 'number') {
