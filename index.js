@@ -124,7 +124,7 @@ var downloadRAR = function(engine,files,callback) {
 					var parts = path.join(engine.path, path.dirname(engine.files[idx].path));
 					// UnRAR eXtract Overwrite KeepBroken VolumePause
 					// This allows unrar to wait after extracting each volume before opening the next.
-					child = proc.spawn("/usr/local/bin/unrar", [ "x", "-o+", "-kb", "-vp", path.join(parts,start), extracted]);
+					child = proc.spawn("unrar", [ "x", "-o+", "-kb", "-vp", path.join(parts,start), extracted]);
 					child.stdin.setEncoding = 'utf-8';
 					process.on('exit', function() { child.kill() });
 					// child.stdout.on('data', function (data) { console.log(data.toString()); });
