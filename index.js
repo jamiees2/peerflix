@@ -95,10 +95,15 @@ var extracting = {};
 var downloadRAR = function(engine,files,callback) {
 	// Possible race conditions?
 	var extracted = path.join(engine.path, "extracted");
+	var parts = path.join(engine.path, path.dirname(engine.files[idx].path));
+	// If we are on windows, then it is neccessary to copy the files before attempting to unrar
+	if (process.platform === "win32") {
+		parts = path.join(engine.path, "parts");
+		mkdirp.sync(parts);
+	}
 	var t = files.join(",");
 	if (extracting[t] === true) {
 		var idx = parseInt(files[0]);
-		var parts = path.join(engine.path, path.dirname(engine.files[idx].path));
 		var start = engine.files[idx].name;
 		return callback(null, { extracted: extracted, parts: parts, start: start });
 	}
@@ -114,14 +119,18 @@ var downloadRAR = function(engine,files,callback) {
 		}
 		tasks.push(function(async_callback){
 			var reader = engine.files[idx].createReadStream();
-			reader.on('data',function(){/* noop */});
+			if (process.platform === "win32"){
+				reader.pipe(fs.createWriteStream(path.join(parts,engine.files[idx].name)))
+			} else {
+				reader.on('data',function(){/* noop */});
+			}
 			reader.on('end',function(){
 				// console.log("Completed " + engine.files[idx].name);
 
 				if (child === null) {
 
 					var start = engine.files[idx].name;
-					var parts = path.join(engine.path, path.dirname(engine.files[idx].path));
+					// var parts = path.join(engine.path, path.dirname(engine.files[idx].path));
 					// UnRAR eXtract Overwrite KeepBroken VolumePause
 					// This allows unrar to wait after extracting each volume before opening the next.
 					child = proc.spawn("unrar", [ "x", "-o+", "-kb", "-vp", path.join(parts,start), extracted]);
