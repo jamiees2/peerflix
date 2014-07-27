@@ -30,32 +30,31 @@ var parseBlocklist = function(filename) {
 	return blocklist;
 };
 
-var listRar = function(filename, done) {
+var listRAR = function(filename, done) {
 	var self = this;
 	var eol = os.EOL + os.EOL;
 	proc.exec('unrar vt ' + filename, function (err, stdout) {
 		if (err) { return done(err); }
 		var chunks = stdout.split(eol);
 		chunks = chunks.slice(2, chunks.length - 1);
-		var list = chunks.map(extractProps);
+		var list = chunks.map(function(raw){
+			var desc = {};
+
+			var props = raw.split(os.EOL);
+			props.forEach(function (prop) {
+				prop = prop.split(': ');
+				var key = extractRARKey(prop[0]);
+				var val = prop[1];
+				desc[key] = val;
+			});
+
+	return desc;
+		});
 		done(null, list);
 	})
 }
 
-function extractProps (raw) {
-	var desc = {};
-
-	var props = raw.split(os.EOL);
-	props.forEach(function (prop) {
-		prop = prop.split(': ');
-		var key = normalizeKey(prop[0]);
-		var val = prop[1];
-		desc[key] = val;
-	});
-
-	return desc;
-}
-function normalizeKey (key) {
+function extractRARKey (key) {
   var normKey = key;
   normKey = normKey.toLowerCase();
   normKey = normKey.replace(/^\s+/, '');
@@ -95,43 +94,67 @@ function normalizeKey (key) {
 // 	}
 // 	setTimeout(read,500);
 // }
-var getLargestInTorrent = function(filelist) {
-	var file, files, largest, lg, name;
-	files = {};
+function CompositeFile(name) {
+	this.length = 0;
+	this.composite = true;
+	this.name = name;
+	this.files = [];
+}
+CompositeFile.prototype.addFile = function(file, index, part) {
+	file.index = index;
+	file.part = part;
+	this.length += file.length;
+	this.files.push(file);
+}
+
+CompositeFile.prototype.select = function() {
+	this.files.forEach(function(file) {
+		file.select();
+	});
+}
+var parseFiles = function(filelist) {
+	var file, files, largest, lg, name, partRegex, currentIdx = -1;
+	partRegex = new RegExp("part\\d+")
+	files = [], compositeList = {};
 	filelist.forEach(function(file, i) {
-		var extension, name, part;
+		var extension, name, part, match;
 		extension = file.name.substr(file.name.lastIndexOf('.') + 1);
 		if (extension[0] === "r") {
-			name = file.name.slice(0, -extension.length - 1) + ".rar";
-			part = Number(extension.substr(1));
-			if (isNaN(part)) {
-				part = "00" + extension;
+
+			name = file.name.slice(0, -extension.length - 1);
+			
+			if ((match = file.name.match(partRegex)) !== null) {
+				part = match[0].substr(4)
+				name = name.slice(0, -(match[0].length + 1))
 			} else {
-				part = extension;
+				part = Number(extension.substr(1));
+				if (isNaN(part)) {
+					part = "00" + extension;
+				} else {
+					part = extension;
+				}
 			}
-			files[name] || (files[name] = {
-				length: 0,
-				composite: true,
-				name: name
-			});
-			files[name][part] = file;
-			files[name][part].index = i;
-			files[name].length += file.length;
+			name += ".rar";
+			if (!(name in compositeList)) {
+				files.push(new CompositeFile(name));
+				currentIdx += 1;
+				compositeList[name] = true;
+			}
+			files[currentIdx].addFile(file, i, part);
 		} else {
-			files[file.name] = file;
-			files[file.name].index = i;
+			files.push(file);
+			currentIdx += 1;
+			files[currentIdx].index = i;
 		}
 	});
-	largest = 0;
-	lg = "";
-	for (name in files) {
-		file = files[name];
-		if (file.length > largest) {
-			largest = file.length;
-			lg = name;
+	files.forEach(function(file){
+		if (typeof file.files !== "undefined") {
+			file.files.sort(function(a,b) {
+				return (a.part < b.part) ? -1 : (a.part > b.part) ? 1 : 0;
+			});
 		}
-	}
-	return files[lg];
+	});
+	return files;
 };
 var findByName = function(name, filelist) {
 	for (index in files) {
@@ -149,38 +172,31 @@ var downloadRAR = function(engine,files,callback) {
 		var parts = path.join(engine.path, "parts");
 		mkdirp.sync(parts);
 	}
-	var t = files.join(",");
-	if (extracting[t] === true) {
-		var idx = parseInt(files[0]);
-		var start = engine.files[idx].name;
-		parts = parts || path.join(engine.path, path.dirname(engine.files[idx].path));
+	var t = files.name;
+	if (extracting[files.name] === true) {
+		var start = files.files[0].name;
+		parts = parts || path.join(engine.path, path.dirname(files.files[0].path));
 		return callback(null, { extracted: extracted, parts: parts, start: start });
 	}
-	extracting[t] = true;
+	extracting[files.name] = true;
 	mkdirp.sync(extracted);
 	var tasks = [];
 	var child = null;
-	files.forEach(function(idx){
-		idx = parseInt(idx);
-		if (isNaN(idx) || idx >= engine.files.length) {
-			delete extracting[t];
-			throw new ArgumentError("Non existent index!");
-		}
+	files.files.forEach(function(file){
 		tasks.push(function(async_callback){
-			var reader = engine.files[idx].createReadStream();
-			var parts = path.join(engine.path, path.dirname(engine.files[idx].path));
+			var reader = file.createReadStream();
+			var parts = path.join(engine.path, path.dirname(file.path));
 			if (process.platform === "win32"){
 				parts = path.join(engine.path, "parts");
-				reader.pipe(fs.createWriteStream(path.join(parts,engine.files[idx].name)))
+				reader.pipe(fs.createWriteStream(path.join(parts,file.name)))
 			} else {
-			reader.on('data',function(){/* noop */});
-		}
-		reader.on('end',function(){
-				// console.log("Completed " + engine.files[idx].name);
+				reader.on('data',function(){/* noop */});
+			}
+			reader.on('end',function(){
+				// console.log("Completed " + file.name);
 
 				if (child === null) {
-
-					var start = engine.files[idx].name;
+					var start = files.files[0].name;
 					// UnRAR eXtract Overwrite KeepBroken VolumePause
 					// This allows unrar to wait after extracting each volume before opening the next.
 					child = proc.spawn("unrar", [ "x", "-o+", "-kb", "-vp", path.join(parts,start), extracted]);
@@ -226,39 +242,20 @@ var pumpRange = function(request, response, file, readStream){
 var createServer = function(e, index) {
 	var server = http.createServer();
 	proc.spawn("unrar");
+	var files = parseFiles(e.files);
 	var onready = function() {
 
 		if (typeof index !== 'number') {
-			// index = e.files.reduce(function(a, b) {
-			// 	return a.length > b.length ? a : b;
-			// });
-			// index = e.files.indexOf(index);
-			var largest = getLargestInTorrent(e.files)
-			var keys, indexes = [], files = [];
-			if (largest.composite) {
-				keys = Object.keys(largest);
-				keys.sort();
-				keys.forEach(function(id) {
-					var file;
-					if (id === "composite" || id === "length" || id === "name") {
-						return;
-					}
-					file = largest[id];
-					file.select();
-					indexes.push(file.index);
-					files.push(file);
-				});
-				index = indexes;
-				server.index = files;
-			} else {
-				largest.select();
-				index = largest.index;
-				server.index = largest;
-			}
+			var largest = files.reduce(function(a, b) {
+				return a.length > b.length ? a : b;
+			});
+			largest.select();
+			server.index = largest;
+			index = files.indexOf(largest);
 
 		} else {
-			e.files[index].select();
-			server.index = e.files[index];
+			files[index].select();
+			server.index = files[index];
 		}
 	};
 
@@ -267,49 +264,76 @@ var createServer = function(e, index) {
 
 	var toJSON = function(host) {
 		var list = [];
-		e.files.forEach(function(file, i) {
+		files.forEach(function(file, i) {
 			list.push({name:file.name, length:file.length, url:'http://'+host+'/'+i});
 		});
 		return JSON.stringify(list, null, '  ');
 	};
 
 	server.on('request', function(request, response) {
+		// console.log(request);
 		var u = url.parse(request.url);
 		var host = request.headers.host || 'localhost';
 
 		if (u.pathname === '/favicon.ico') 
 			return response.end();
-
+		u.pathname = u.pathname.replace(".mp4","")
 		if (u.pathname === '/') {
-			if (index instanceof Array)
-				u.pathname = '/' + index.join(",");
-			else
-				u.pathname = '/' + index;
+			u.pathname = '/' + index;
 		}
 		if (u.pathname === '/.json') return response.end(toJSON(host));
 		if (u.pathname === '/.m3u') {
 			response.setHeader('Content-Type', 'application/x-mpegurl; charset=utf-8');
-			return response.end('#EXTM3U\n' + e.files.map(function (f, i) {
+			return response.end('#EXTM3U\n' + files.map(function (f, i) {
 				return '#EXTINF:-1,' + f.path + '\n' + 'http://'+host+'/'+i;
 			}).join('\n'));
 		}
+		var params = u.pathname.slice(1).split("/");
+		var i = Number(params[0]);
 
-		var i = u.pathname.slice(1).split(",");
-		if (i.length > 1) {
-			downloadRAR(e,i, function(err, data){
+		if (isNaN(i) || i >= files.length) {
+			response.statusCode = 404;
+			response.end();
+			return;
+		}
+		if (files[i].composite) {
+			downloadRAR(e, files[i], function(err, data){
 				if (err) {
 					response.statusCode = 404;
 					response.end();
 					return;
 				}
-				listRar(path.join(data.parts, data.start),function (err, entries) {
+				listRAR(path.join(data.parts, data.start),function (err, entries) {
 					if (err) {
 						console.log(err);
 						return;
 					}
-					var file = entries.reduce(function(a, b) {
-						return a.size > b.size ? a : b;
-					});
+					var file;
+					if (params[1] === ".json") {
+						
+						var list = [];
+						entries.forEach(function(file, idx) {
+							list.push({name:file.name, length:file.size, url:'http://'+host+'/'+i+"/"+idx});
+						});
+						return response.end(JSON.stringify(list, null, '  '));
+					} else if (params[1] === ".m3u") {
+						response.setHeader('Content-Type', 'application/x-mpegurl; charset=utf-8');
+						return response.end('#EXTM3U\n' + entries.map(function (f, idx) {
+							return '#EXTINF:-1,' + data.start + "/" + f.name + '\n' + 'http://'+host+'/'+i+"/"+idx;
+						}).join('\n'));
+					} else if (typeof params[1] !== "undefined" && params[1] !== "") {
+						var idx = Number(params[1])
+						if (isNaN(idx) || idx >= entries.length) {
+							response.statusCode = 404;
+							response.end();
+							return;
+						}
+						file = entries[idx];
+					}
+					if (typeof file === "undefined")
+						file = entries.reduce(function(a, b) {
+							return a.size > b.size ? a : b;
+						});
 					var filepath = path.join(data.extracted,file.name);
 					pumpRange(request, response, { length: file.size, name: file.name}, function(range) {
 						if (range) {
@@ -322,13 +346,6 @@ var createServer = function(e, index) {
 			});
 
 		} else {
-			i = Number(u.pathname.slice(1));
-
-			if (isNaN(i) || i >= e.files.length) {
-				response.statusCode = 404;
-				response.end();
-				return;
-			}
 
 			var file = e.files[i];
 			pumpRange(request, response, file, function(range) {
@@ -364,7 +381,7 @@ module.exports = function(torrent, opts) {
 	engine.server = createServer(engine, opts.index);
 
 	// Listen when torrent-stream is ready, by default a random port.
-	engine.on('ready', function() { engine.server.listen(opts.port || 0); });
+	engine.on('ready', function() { engine.server.listen(opts.port || 0, "0.0.0.0"); });
 
 	return engine;
 };
