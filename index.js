@@ -381,7 +381,7 @@ module.exports = function(torrent, opts) {
 	engine.server = createServer(engine, opts.index);
 
 	// Listen when torrent-stream is ready, by default a random port.
-	engine.on('ready', function() { engine.server.listen(opts.port || 0, "0.0.0.0"); });
+	engine.on('ready', function() { engine.server.listen(opts.port || 0); });
 
 	return engine;
 };
