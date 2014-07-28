@@ -11,6 +11,7 @@ var mkdirp = require('mkdirp');
 var async = require('async');
 var GrowingFile = require('growing-file');
 var os = require('os');
+var Transcoder = require('stream-transcoder');
 
 
 
@@ -215,25 +216,51 @@ var downloadRAR = function(engine,files,callback) {
 	async.series(tasks); // Process each of them in a row, so that the output is correct
 }
 
-var pumpRange = function(request, response, file, readStream){
+var pumpRange = function(request, response, file, readStream, transcoding){
+	var mimetype = mime.lookup(file.name);
 	var range = request.headers.range;
+	if (transcoding && (!mimetype.substr(0,6) === "video/" || mimetype === "video/mp4"))
+		transcoding = false;
+
+	if (transcoding) {
+		response.setHeader('Content-Type', "video/mp4");
+		var transcoder = new Transcoder(readStream(null))
+	        .maxSize(1280, 720)
+	        .videoCodec('h264')
+	        .videoBitrate(800 * 1000)
+	        .fps(25)
+	        .sampleRate(44100)
+	        .channels(2)
+	        .audioBitrate(128 * 1000)
+	        .format('mp4')
+	        .on('finish', function() {
+	            console.log("finished");
+	        })
+	        // .stream()
+	        .stream().pipe(response);
+	    // pump(transcoder,response);
+	    return;
+	}
 	range = range && rangeParser(file.length, range)[0];
 	response.setHeader('Accept-Ranges', 'bytes');
-	response.setHeader('Content-Type', mime.lookup(file.name));
+	response.setHeader('Content-Type', mimetype);
 
+	var stream;
 	if (!range) {
 		response.setHeader('Content-Length', file.length);
 		if (request.method === 'HEAD') return response.end();
-		pump(readStream(null), response);
+		stream = readStream(null);
 		return;
+	} else {
+
+		response.statusCode = 206;
+		response.setHeader('Content-Length', range.end - range.start + 1);
+		response.setHeader('Content-Range', 'bytes '+range.start+'-'+range.end+'/'+file.length);
+
+		if (request.method === 'HEAD') return response.end();
+		stream = readStream(range);
 	}
-
-	response.statusCode = 206;
-	response.setHeader('Content-Length', range.end - range.start + 1);
-	response.setHeader('Content-Range', 'bytes '+range.start+'-'+range.end+'/'+file.length);
-
-	if (request.method === 'HEAD') return response.end();
-	pump(readStream(range), response);
+	pump(stream, response);
 }
 
 
@@ -277,7 +304,6 @@ var createServer = function(e, index) {
 
 		if (u.pathname === '/favicon.ico') 
 			return response.end();
-		u.pathname = u.pathname.replace(".mp4","")
 		if (u.pathname === '/') {
 			u.pathname = '/' + index;
 		}
@@ -289,6 +315,11 @@ var createServer = function(e, index) {
 			}).join('\n'));
 		}
 		var params = u.pathname.slice(1).split("/");
+		var transcoding = false;
+		if (params[0].substr(params[0].length - 4) === ".mp4") {
+			transcoding = true;
+			params[0] = params[0].slice(0,-4);
+		}
 		var i = Number(params[0]);
 
 		if (isNaN(i) || i >= files.length) {
@@ -354,7 +385,7 @@ var createServer = function(e, index) {
 				} else {
 					return file.createReadStream();
 				}
-			});
+			}, transcoding);
 		}
 	}).on('connection', function(socket) {
 		socket.setTimeout(36000000);
@@ -381,7 +412,7 @@ module.exports = function(torrent, opts) {
 	engine.server = createServer(engine, opts.index);
 
 	// Listen when torrent-stream is ready, by default a random port.
-	engine.on('ready', function() { engine.server.listen(opts.port || 0, "0.0.0.0"); });
+	engine.on('ready', function() { engine.server.listen(opts.port || 0); });
 
 	return engine;
 };
