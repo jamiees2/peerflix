@@ -242,7 +242,7 @@ var pumpRange = function(request, response, file, readStream){
 var createServer = function(e, index) {
 	var server = http.createServer();
 	proc.spawn("unrar");
-	var files = parseFiles(e.files);
+	var files = server.files = parseFiles(e.files);
 	var onready = function() {
 
 		if (typeof index !== 'number') {
