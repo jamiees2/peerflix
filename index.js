@@ -187,8 +187,7 @@ var downloadRAR = function(engine,archive,opts,callback) {
 	var tasks = [];
 	var child = null;
 	var files = archive.files;
-	if (opts.listOnly)
-		files = files.slice(0,1);
+	if (typeof opts.listOnly !== "undefined" && opts.listOnly) files = files.slice(0,1);
 	files.forEach(function(file){
 		tasks.push(function(async_callback){
 			var reader = file.createReadStream();
@@ -206,7 +205,7 @@ var downloadRAR = function(engine,archive,opts,callback) {
 					var start = files[0].name;
 					// UnRAR eXtract Overwrite KeepBroken VolumePause
 					// This allows unrar to wait after extracting each volume before opening the next.
-					if (!opts.listOnly) {
+					if (typeof opts.listOnly === "undefined" || !opts.listOnly) {
 						child = proc.spawn("unrar", [ "x", "-o+", "-kb", "-vp", path.join(parts,start), extracted]);
 						child.stdin.setEncoding = 'utf-8';
 						process.on('exit', function() { child.kill() });
@@ -319,7 +318,7 @@ var createServer = function(e, index) {
 			return;
 		}
 		if (files[i].composite) {
-			if (params[1] === ".json" || params[1] === ".m3u") {
+			if (typeof params[1] !== "undefined" && (params[1] === ".json" || params[1] === ".m3u")) {
 				return downloadRAR(e, files[i], {listOnly: true}, function(err, data){
 					if (err) {
 						response.statusCode = 404;
