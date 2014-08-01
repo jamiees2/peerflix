@@ -164,25 +164,32 @@ var findByName = function(name, filelist) {
 }
 
 var extracting = {};
-var downloadRAR = function(engine,files,callback) {
+var downloadRAR = function(engine,archive,opts,callback) {
+	if (typeof opts === "function") {
+		callback = opts;
+		opts = {};
+	}
 	// Possible race conditions?
 	var extracted = path.join(engine.path, "extracted");
-	// If we are on windows, then it is neccessary to copy the files before attempting to unrar
+	// If we are on windows, then it is neccessary to copy the archive before attempting to unrar
 	if (process.platform === "win32") {
 		var parts = path.join(engine.path, "parts");
 		mkdirp.sync(parts);
 	}
-	var t = files.name;
-	if (extracting[files.name] === true) {
-		var start = files.files[0].name;
-		parts = parts || path.join(engine.path, path.dirname(files.files[0].path));
+	var t = archive.name;
+	if (extracting[archive.name] === true) {
+		var start = archive.files[0].name;
+		parts = parts || path.join(engine.path, path.dirname(archive.files[0].path));
 		return callback(null, { extracted: extracted, parts: parts, start: start });
 	}
-	extracting[files.name] = true;
+	extracting[archive.name] = true;
 	mkdirp.sync(extracted);
 	var tasks = [];
 	var child = null;
-	files.files.forEach(function(file){
+	var files = archive.files;
+	if (opts.listOnly)
+		files = files.slice(0,1);
+	files.forEach(function(file){
 		tasks.push(function(async_callback){
 			var reader = file.createReadStream();
 			var parts = path.join(engine.path, path.dirname(file.path));
@@ -196,12 +203,14 @@ var downloadRAR = function(engine,files,callback) {
 				// console.log("Completed " + file.name);
 
 				if (child === null) {
-					var start = files.files[0].name;
+					var start = files[0].name;
 					// UnRAR eXtract Overwrite KeepBroken VolumePause
 					// This allows unrar to wait after extracting each volume before opening the next.
-					child = proc.spawn("unrar", [ "x", "-o+", "-kb", "-vp", path.join(parts,start), extracted]);
-					child.stdin.setEncoding = 'utf-8';
-					process.on('exit', function() { child.kill() });
+					if (!opts.listOnly) {
+						child = proc.spawn("unrar", [ "x", "-o+", "-kb", "-vp", path.join(parts,start), extracted]);
+						child.stdin.setEncoding = 'utf-8';
+						process.on('exit', function() { child.kill() });
+					}
 					// child.stdout.on('data', function (data) { console.log(data.toString()); });
 					// child.stderr.on('data', function (data) { console.log(data.toString()); });
 					callback(null,{ extracted: extracted, parts: parts, start: start });
@@ -243,6 +252,19 @@ var createServer = function(e, index) {
 	var server = http.createServer();
 	proc.spawn("unrar");
 	var files = server.files = parseFiles(e.files);
+	server.listRAR = function(item, callback) {
+		return downloadRAR(e, item, {listOnly: true}, function(err, data){
+			if(err) return callback(err);
+			listRAR(path.join(data.parts, data.start),function (err, entries) {
+				if(err) return callback(err);
+				var list = [];
+				entries.forEach(function(file, idx) {
+					list.push({name:file.name, length:file.size});
+				});
+				return callback(null, list);
+			});
+		});
+	}
 	var onready = function() {
 
 		if (typeof index !== 'number') {
@@ -297,6 +319,34 @@ var createServer = function(e, index) {
 			return;
 		}
 		if (files[i].composite) {
+			if (params[1] === ".json" || params[1] === ".m3u") {
+				return downloadRAR(e, files[i], {listOnly: true}, function(err, data){
+					if (err) {
+						response.statusCode = 404;
+						response.end();
+						return;
+					}
+					listRAR(path.join(data.parts, data.start),function (err, entries) {
+						if (err) {
+							console.log(err);
+							return;
+						}
+						if (params[1] === ".json") {
+							
+							var list = [];
+							entries.forEach(function(file, idx) {
+								list.push({name:file.name, length:file.size, url:'http://'+host+'/'+i+"/"+idx});
+							});
+							return response.end(JSON.stringify(list, null, '  '));
+						} else if (params[1] === ".m3u") {
+							response.setHeader('Content-Type', 'application/x-mpegurl; charset=utf-8');
+							return response.end('#EXTM3U\n' + entries.map(function (f, idx) {
+								return '#EXTINF:-1,' + data.start + "/" + f.name + '\n' + 'http://'+host+'/'+i+"/"+idx;
+							}).join('\n'));
+						}
+					});
+				});
+			}
 			downloadRAR(e, files[i], function(err, data){
 				if (err) {
 					response.statusCode = 404;
@@ -309,19 +359,7 @@ var createServer = function(e, index) {
 						return;
 					}
 					var file;
-					if (params[1] === ".json") {
-						
-						var list = [];
-						entries.forEach(function(file, idx) {
-							list.push({name:file.name, length:file.size, url:'http://'+host+'/'+i+"/"+idx});
-						});
-						return response.end(JSON.stringify(list, null, '  '));
-					} else if (params[1] === ".m3u") {
-						response.setHeader('Content-Type', 'application/x-mpegurl; charset=utf-8');
-						return response.end('#EXTM3U\n' + entries.map(function (f, idx) {
-							return '#EXTINF:-1,' + data.start + "/" + f.name + '\n' + 'http://'+host+'/'+i+"/"+idx;
-						}).join('\n'));
-					} else if (typeof params[1] !== "undefined" && params[1] !== "") {
+					if (typeof params[1] !== "undefined" && params[1] !== "") {
 						var idx = Number(params[1])
 						if (isNaN(idx) || idx >= entries.length) {
 							response.statusCode = 404;
