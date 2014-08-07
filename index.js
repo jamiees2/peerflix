@@ -33,7 +33,7 @@ var parseBlocklist = function(filename) {
 var listRAR = function(filename, done) {
 	var self = this;
 	var eol = os.EOL + os.EOL;
-	proc.exec('unrar vt ' + filename, function (err, stdout) {
+	proc.exec('unrar vt "' + filename + '"', function (err, stdout) {
 		if (err) { return done(err); }
 		var chunks = stdout.split(eol);
 		chunks = chunks.slice(2, chunks.length - 1);
