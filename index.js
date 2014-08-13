@@ -187,7 +187,9 @@ var downloadRAR = function(engine,archive,opts,callback) {
 	var tasks = [];
 	var child = null;
 	var files = archive.files;
-	if (typeof opts.listOnly !== "undefined" && opts.listOnly) files = files.slice(0,1);
+	opts.listOnly = (typeof opts.listOnly === "undefined" || !opts.listOnly) ? false : true;
+	// TODO: only read file headers for this
+	if (opts.listOnly) files = files.slice(0,1); // We only need the first entry to figure out what is in the RAR
 	files.forEach(function(file){
 		tasks.push(function(async_callback){
 			var reader = file.createReadStream();
@@ -200,21 +202,22 @@ var downloadRAR = function(engine,archive,opts,callback) {
 			}
 			reader.on('end',function(){
 				// console.log("Completed " + file.name);
-
-				if (child === null) {
+				if (opts.listOnly) return callback(null,{ extracted: extracted, parts: parts, start: start });
+				else if (child === null) {
 					var start = files[0].name;
 					// UnRAR eXtract Overwrite KeepBroken VolumePause
 					// This allows unrar to wait after extracting each volume before opening the next.
-					if (typeof opts.listOnly === "undefined" || !opts.listOnly) {
-						child = proc.spawn("unrar", [ "x", "-o+", "-kb", "-vp", path.join(parts,start), extracted]);
-						child.stdin.setEncoding = 'utf-8';
-						process.on('exit', function() { child.kill() });
-					}
-					// child.stdout.on('data', function (data) { console.log(data.toString()); });
-					// child.stderr.on('data', function (data) { console.log(data.toString()); });
-					callback(null,{ extracted: extracted, parts: parts, start: start });
+					child = proc.spawn("unrar", [ "x", "-o+", "-kb", "-vp", path.join(parts,start), extracted]);
+					child.stdin.setEncoding = 'utf-8';
+					process.on('exit', function() { child.kill() });
+
+					child.stdout.on('data', function (data) { console.log(data.toString()); });
+					child.stderr.on('data', function (data) { console.log(data.toString()); });
+					process.nextTick(function(){
+						callback(null,{ extracted: extracted, parts: parts, start: start });
+					});
 				} else {
-					child.stdin.write("C\n"); // [C]ontinue unRARing
+					child.stdin.write("C" + os.EOL); // [C]ontinue unRARing
 				}
 				async_callback(null);
 			});
