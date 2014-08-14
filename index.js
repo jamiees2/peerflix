@@ -312,6 +312,10 @@ var createServer = function(e, index) {
 				return '#EXTINF:-1,' + f.path + '\n' + 'http://'+host+'/'+i;
 			}).join('\n'));
 		}
+	    response.setHeader('transferMode.dlna.org', 'Streaming');
+	    response
+	        .setHeader('contentFeatures.dlna.org',
+	            'DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=017000 00000000000000000000000000');
 		var params = u.pathname.slice(1).split("/");
 		var i = Number(params[0]);
 
